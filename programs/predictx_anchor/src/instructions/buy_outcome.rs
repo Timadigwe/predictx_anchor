@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{Mint, Token, TokenAccount};
 use crate::state::*;
 use crate::errors::*;
 
@@ -25,15 +26,18 @@ pub fn buy_outcome(
         market.outcome2_supply = market.outcome2_supply.checked_add(tokens_to_receive).ok_or(PredictXError::InvalidAmount)?;
     }
     
-    // Transfer SOL from buyer to market
-    let transfer_ctx = CpiContext::new(
-        ctx.accounts.system_program.to_account_info(),
-        anchor_lang::system_program::Transfer {
-            from: ctx.accounts.buyer.to_account_info(),
-            to: ctx.accounts.market.to_account_info(),
-        },
-    );
-    anchor_lang::system_program::transfer(transfer_ctx, amount)?;
+    // Transfer tokens from buyer to treasury
+    anchor_spl::token::transfer(
+        CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            anchor_spl::token::Transfer {
+                from: ctx.accounts.buyer_token_account.to_account_info(),
+                to: ctx.accounts.treasury.to_account_info(),
+                authority: ctx.accounts.buyer.to_account_info(),
+            },
+        ),
+        amount,
+    )?;
     
     // Update user holdings
     let user_holdings = &mut ctx.accounts.user_holdings;
@@ -51,6 +55,21 @@ pub struct BuyOutcome<'info> {
     #[account(mut)]
     pub market: Account<'info, Market>,
     
+    #[account(mut)]
+    pub mint: Account<'info, Mint>,
+    
+    #[account(
+        mut,
+        seeds = [b"treasury", market.key().as_ref()],
+        bump
+    )]
+    pub treasury: Account<'info, TokenAccount>,
+    
+    #[account(
+        mut,
+    )]
+    pub buyer_token_account: Account<'info, TokenAccount>,
+    
     #[account(
         init_if_needed,
         payer = buyer,
@@ -63,4 +82,6 @@ pub struct BuyOutcome<'info> {
     #[account(mut)]
     pub buyer: Signer<'info>,
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
 } 

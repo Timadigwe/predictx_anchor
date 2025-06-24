@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{Mint, Token, TokenAccount};
 use crate::state::*;
 use crate::errors::*;
 
@@ -12,32 +13,50 @@ pub fn claim_winnings(
     let total_tokens = user_holdings.outcome1_tokens.checked_add(user_holdings.outcome2_tokens).ok_or(PredictXError::InvalidAmount)?;
     require!(total_tokens > 0, PredictXError::NoTokensToClaim);
     
-    let price_per_token = 1_000_000_000u64;
-    let total_payout = match market.asserted_outcome {
+    let tokens_to_transfer = match market.asserted_outcome {
         1 => {
-            let payout = user_holdings.outcome1_tokens.checked_mul(price_per_token).ok_or(PredictXError::InvalidAmount)?;
+            let tokens = user_holdings.outcome1_tokens;
             user_holdings.outcome1_tokens = 0;
             user_holdings.outcome2_tokens = 0;
-            payout
+            tokens
         },
         2 => {
-            let payout = user_holdings.outcome2_tokens.checked_mul(price_per_token).ok_or(PredictXError::InvalidAmount)?;
+            let tokens = user_holdings.outcome2_tokens;
             user_holdings.outcome1_tokens = 0;
             user_holdings.outcome2_tokens = 0;
-            payout
+            tokens
         },
         3 => {
-            let payout = total_tokens.checked_mul(price_per_token).ok_or(PredictXError::InvalidAmount)?;
+            let tokens = total_tokens;
             user_holdings.outcome1_tokens = 0;
             user_holdings.outcome2_tokens = 0;
-            payout
+            tokens
         },
         _ => return err!(PredictXError::InvalidOutcome),
     };
     
-    if total_payout > 0 {
-        **ctx.accounts.market.to_account_info().try_borrow_mut_lamports()? -= total_payout;
-        **ctx.accounts.user.to_account_info().try_borrow_mut_lamports()? += total_payout;
+    if tokens_to_transfer > 0 {
+        // Transfer tokens from treasury to user
+        let seeds = &[
+            b"market",
+            market.authority.as_ref(),
+            market.name.as_bytes(),
+            &[market.bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+        
+        anchor_spl::token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                anchor_spl::token::Transfer {
+                    from: ctx.accounts.treasury.to_account_info(),
+                    to: ctx.accounts.user_token_account.to_account_info(),
+                    authority: ctx.accounts.market.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            tokens_to_transfer,
+        )?;
     }
     
     Ok(())
@@ -48,6 +67,23 @@ pub struct ClaimWinnings<'info> {
     #[account(mut)]
     pub market: Account<'info, Market>,
     
+    #[account(mut)]
+    pub mint: Account<'info, Mint>,
+    
+    #[account(
+        mut,
+        seeds = [b"treasury", market.key().as_ref()],
+        bump
+    )]
+    pub treasury: Account<'info, TokenAccount>,
+    
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = user,
+    )]
+    pub user_token_account: Account<'info, TokenAccount>,
+    
     #[account(
         mut,
         seeds = [b"user_holdings", user.key().as_ref(), market.key().as_ref()],
@@ -57,6 +93,8 @@ pub struct ClaimWinnings<'info> {
     
     #[account(mut)]
     pub user: Signer<'info>,
-    
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, anchor_spl::associated_token::AssociatedToken>,
+    pub rent: Sysvar<'info, Rent>,
 } 

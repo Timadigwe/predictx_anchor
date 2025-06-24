@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{Mint, Token, TokenAccount};
 use crate::state::*;
 use crate::errors::*;
 
@@ -12,6 +13,11 @@ pub fn sell_outcome(
     
     let market = &mut ctx.accounts.market;
     require!(!market.resolved, PredictXError::MarketAlreadyResolved);
+    
+    // Extract market data before mutable borrow
+    let authority = market.authority;
+    let name = market.name.clone();
+    let bump = market.bump;
     
     let user_holdings = &mut ctx.accounts.user_holdings;
     if outcome == 1 {
@@ -33,15 +39,27 @@ pub fn sell_outcome(
         user_holdings.outcome2_tokens = user_holdings.outcome2_tokens.checked_sub(tokens_to_sell).ok_or(PredictXError::InvalidAmount)?;
     }
     
-    // Transfer SOL from market to seller
-    let transfer_ctx = CpiContext::new(
-        ctx.accounts.system_program.to_account_info(),
-        anchor_lang::system_program::Transfer {
-            from: ctx.accounts.market.to_account_info(),
-            to: ctx.accounts.seller.to_account_info(),
-        },
-    );
-    anchor_lang::system_program::transfer(transfer_ctx, sol_to_receive)?;
+    // Transfer tokens from treasury to seller
+    let seeds = &[
+        b"market",
+        authority.as_ref(),
+        name.as_bytes(),
+        &[bump],
+    ];
+    let signer_seeds = &[&seeds[..]];
+    
+    anchor_spl::token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            anchor_spl::token::Transfer {
+                from: ctx.accounts.treasury.to_account_info(),
+                to: ctx.accounts.seller_token_account.to_account_info(),
+                authority: ctx.accounts.market.to_account_info(),
+            },
+            signer_seeds,
+        ),
+        sol_to_receive,
+    )?;
     
     Ok(())
 }
@@ -50,6 +68,23 @@ pub fn sell_outcome(
 pub struct SellOutcome<'info> {
     #[account(mut)]
     pub market: Account<'info, Market>,
+    
+    #[account(mut)]
+    pub mint: Account<'info, Mint>,
+    
+    #[account(
+        mut,
+        seeds = [b"treasury", market.key().as_ref()],
+        bump
+    )]
+    pub treasury: Account<'info, TokenAccount>,
+    
+    #[account(
+        mut,
+        associated_token::mint = mint,
+        associated_token::authority = seller,
+    )]
+    pub seller_token_account: Account<'info, TokenAccount>,
     
     #[account(
         mut,
@@ -61,4 +96,7 @@ pub struct SellOutcome<'info> {
     #[account(mut)]
     pub seller: Signer<'info>,
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, anchor_spl::associated_token::AssociatedToken>,
+    pub rent: Sysvar<'info, Rent>,
 } 

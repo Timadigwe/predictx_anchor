@@ -16,6 +16,15 @@ pub struct Market {
     pub asserted_outcome: u8,        // 0=unresolved, 1=outcome1, 2=outcome2, 3=unresolvable
     pub outcome1_supply: u64,        // Current supply of outcome1 tokens
     pub outcome2_supply: u64,        // Current supply of outcome2 tokens
+    pub mint: Pubkey,                // Mint public key
+    pub treasury: Pubkey,            // Treasury public key
+    pub bump: u8,                   // PDA bump
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct Treasury {
+    pub market: Pubkey,             // Associated market
     pub bump: u8,                   // PDA bump
 }
 
